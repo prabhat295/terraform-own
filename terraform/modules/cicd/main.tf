@@ -1,28 +1,24 @@
 # CodeBuild project
-resource "aws_codebuild_project" "react_app" {
-  name          = "react-app-build"
-  description   = "Build React application"
-  build_timeout = "10"
+resource "aws_codebuild_project" "this" {
+  name          = "${var.project_name}-build"
+  description   = "Build project for ${var.project_name}"
   service_role  = aws_iam_role.codebuild_role.arn
+  build_timeout = 30
 
   artifacts {
     type = "CODEPIPELINE"
   }
 
   environment {
-    type            = "LINUX_CONTAINER"
-    compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/amazonlinux2-x86_64-standard:3.0"
-    privileged_mode = true
+    type                        = "LINUX_CONTAINER"
+    compute_type                = "BUILD_GENERAL1_SMALL"
+    image                       = "aws/codebuild/amazonlinux2-x86_64-standard:3.0"
+    image_pull_credentials_type = "CODEBUILD"
+    privileged_mode             = false
 
     environment_variable {
       name  = "S3_BUCKET"
-      value = aws_s3_bucket.react_app.bucket
-    }
-
-    environment_variable {
-      name  = "CLOUDFRONT_DISTRIBUTION_ID"
-      value = aws_cloudfront_distribution.react_app.id
+      value = var.s3_bucket_name
     }
   }
 
@@ -30,15 +26,32 @@ resource "aws_codebuild_project" "react_app" {
     type      = "CODEPIPELINE"
     buildspec = "buildspec.yml"
   }
+
+  logs_config {
+    cloudwatch_logs {
+      group_name = "/aws/codebuild/${var.project_name}-build"
+    }
+  }
+
+  dynamic "vpc_config" {
+    for_each = var.vpc_id != null ? [1] : []
+    content {
+      vpc_id             = var.vpc_id
+      subnets            = var.subnet_ids
+      security_group_ids = var.security_group_ids
+    }
+  }
+
+  tags = var.tags
 }
 
 # CodePipeline
-resource "aws_codepipeline" "react_app" {
-  name     = "react-app-pipeline"
+resource "aws_codepipeline" "this" {
+  name     = "${var.project_name}-pipeline"
   role_arn = aws_iam_role.codepipeline_role.arn
 
   artifact_store {
-    location = aws_s3_bucket.react_app.bucket
+    location = var.artifact_bucket_name
     type     = "S3"
   }
 
@@ -75,15 +88,17 @@ resource "aws_codepipeline" "react_app" {
       version         = "1"
 
       configuration = {
-        ProjectName = aws_codebuild_project.react_app.name
+        ProjectName = aws_codebuild_project.this.name
       }
     }
   }
+
+  tags = var.tags
 }
 
 # IAM role for CodeBuild
 resource "aws_iam_role" "codebuild_role" {
-  name = "codebuild-role"
+  name = "${var.project_name}-build-codebuild-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -97,11 +112,13 @@ resource "aws_iam_role" "codebuild_role" {
       }
     ]
   })
+
+  tags = var.tags
 }
 
 # IAM role for CodePipeline
 resource "aws_iam_role" "codepipeline_role" {
-  name = "codepipeline-role"
+  name = "${var.project_name}-pipeline-codepipeline-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -115,11 +132,13 @@ resource "aws_iam_role" "codepipeline_role" {
       }
     ]
   })
+
+  tags = var.tags
 }
 
 # IAM policy for CodeBuild
 resource "aws_iam_role_policy" "codebuild_policy" {
-  name = "codebuild-policy"
+  name = "${var.project_name}-build-codebuild-policy"
   role = aws_iam_role.codebuild_role.id
 
   policy = jsonencode({
@@ -128,23 +147,22 @@ resource "aws_iam_role_policy" "codebuild_policy" {
       {
         Effect = "Allow"
         Action = [
-          "s3:GetObject",
-          "s3:GetObjectVersion",
-          "s3:PutObject",
-          "s3:GetBucketVersioning"
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
         ]
-        Resource = [
-          aws_s3_bucket.react_app.arn,
-          "${aws_s3_bucket.react_app.arn}/*"
-        ]
+        Resource = "*"
       },
       {
         Effect = "Allow"
         Action = [
-          "cloudfront:CreateInvalidation"
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject"
         ]
         Resource = [
-          aws_cloudfront_distribution.react_app.arn
+          "${var.artifact_bucket_arn}/*",
+          "${var.artifact_bucket_arn}"
         ]
       }
     ]
@@ -153,7 +171,7 @@ resource "aws_iam_role_policy" "codebuild_policy" {
 
 # IAM policy for CodePipeline
 resource "aws_iam_role_policy" "codepipeline_policy" {
-  name = "codepipeline-policy"
+  name = "${var.project_name}-pipeline-codepipeline-policy"
   role = aws_iam_role.codepipeline_role.id
 
   policy = jsonencode({
@@ -168,8 +186,8 @@ resource "aws_iam_role_policy" "codepipeline_policy" {
           "s3:PutObject"
         ]
         Resource = [
-          aws_s3_bucket.react_app.arn,
-          "${aws_s3_bucket.react_app.arn}/*"
+          "${var.artifact_bucket_arn}/*",
+          "${var.artifact_bucket_arn}"
         ]
       },
       {
